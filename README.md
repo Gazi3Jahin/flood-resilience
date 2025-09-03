@@ -21,5 +21,3 @@ This project is licensed under the MIT License — see the LICENSE file for deta
 Author
 Gazi Jahin
 CSE Graduate | Bangladesh
-Gazi Jahin
-CSE Graduate | Bangladesh
