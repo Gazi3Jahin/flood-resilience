@@ -46,21 +46,26 @@ st.write("Compute FSIs, FRI, predict yields (Ridge / RF / CatBoost), and explore
 # ---------------------------
 # Load dataset
 # ---------------------------
-DATA_PATH = r"C:\Users\gazi3\OneDrive\Documents\Flood resilence\All devision Crop Data (2000-2024)-Merged+Normalized - Sheet1 (2).csv"
-if not os.path.exists(DATA_PATH):
-    st.error(f"CSV not found at {DATA_PATH}. Upload or place your CSV at this path.")
+# ---------------------------
+# Upload dataset
+# ---------------------------
+st.sidebar.markdown("## Upload CSV Dataset")
+uploaded_file = st.sidebar.file_uploader("Upload your CSV file", type=["csv"])
+
+if uploaded_file is not None:
+    @st.cache_data
+    def load_data(file):
+        df = pd.read_csv(file)
+        return df
+
+    df = load_data(uploaded_file)
+    st.sidebar.write(f"Rows: {df.shape[0]}, Columns: {df.shape[1]}")
+    if st.sidebar.checkbox("Show raw data (first 10 rows)"):
+        st.dataframe(df.head(10))
+else:
+    st.warning("Please upload a CSV file to continue.")
     st.stop()
 
-@st.cache_data
-def load_data(path):
-    df = pd.read_csv(path)
-    return df
-
-df = load_data(DATA_PATH)
-st.sidebar.markdown("## Dataset overview")
-st.sidebar.write(f"Rows: {df.shape[0]}, Columns: {df.shape[1]}")
-if st.sidebar.checkbox("Show raw data (first 10 rows)"):
-    st.dataframe(df.head(10))
 
 # ---------------------------
 # Ensure required columns
