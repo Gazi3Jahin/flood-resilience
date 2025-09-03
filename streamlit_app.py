@@ -44,23 +44,25 @@ st.title("🌾 Flood Resilience Dashboard — Division-level Crop Yield")
 st.write("Compute FSIs, FRI, predict yields (Ridge / RF / CatBoost), and explore SHAP explanations.")
 
 # ---------------------------
-# Load dataset
+# Load dataset using uploader
 # ---------------------------
-DATA_PATH = r"C:\Users\gazi3\OneDrive\Documents\Flood resilence\All devision Crop Data (2000-2024)-Merged+Normalized - Sheet1 (2).csv"
-if not os.path.exists(DATA_PATH):
-    st.error(f"CSV not found at {DATA_PATH}. Upload or place your CSV at this path.")
+uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
+
+if uploaded_file is not None:
+    @st.cache_data
+    def load_data(file):
+        df = pd.read_csv(file)
+        return df
+
+    df = load_data(uploaded_file)
+
+    st.sidebar.markdown("## Dataset overview")
+    st.sidebar.write(f"Rows: {df.shape[0]}, Columns: {df.shape[1]}")
+    if st.sidebar.checkbox("Show raw data (first 10 rows)"):
+        st.dataframe(df.head(10))
+else:
+    st.warning("Please upload your CSV to proceed.")
     st.stop()
-
-@st.cache_data
-def load_data(path):
-    df = pd.read_csv(path)
-    return df
-
-df = load_data(DATA_PATH)
-st.sidebar.markdown("## Dataset overview")
-st.sidebar.write(f"Rows: {df.shape[0]}, Columns: {df.shape[1]}")
-if st.sidebar.checkbox("Show raw data (first 10 rows)"):
-    st.dataframe(df.head(10))
 
 # ---------------------------
 # Ensure required columns
@@ -131,9 +133,6 @@ st.success("Expected Yield & FRI computed.")
 # ---------------------------
 # Modeling: Ridge / RF / CatBoost
 # ---------------------------
-# ---------------------------
-# Modeling: prepare X, y
-# ---------------------------
 st.markdown("### 🧠 Train models (Ridge / RandomForest / CatBoost)")
 
 feature_cols = [
@@ -149,8 +148,6 @@ groups = df["Division"]
 # ---------------------------
 # Division-aware train-test split
 # ---------------------------
-
-# Temporal split: last 20% years per division for test
 df = df.sort_values(["Division","year"])
 test_years_per_div = df.groupby("Division")["year"].apply(lambda x: x.nlargest(max(1,int(0.2*len(x))))).explode()
 test_mask = df.index.isin(test_years_per_div.index)
@@ -159,32 +156,23 @@ train_mask = ~test_mask
 X_train, X_test = X[train_mask], X[test_mask]
 y_train, y_test = y[train_mask], y[test_mask]
 
-# If test set too small, fallback to simple random split
 if len(y_test) < 10:
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# ---------------------------
 # Train models
-# ---------------------------
-
-# 1) Ridge
 ridge = Ridge(alpha=1.0)
 ridge.fit(X_train, y_train)
 ridge_pred = ridge.predict(X_test)
 
-# 2) Random Forest
 rf = RandomForestRegressor(n_estimators=300, max_depth=10, random_state=42)
 rf.fit(X_train, y_train)
 rf_pred = rf.predict(X_test)
 
-# 3) CatBoost
 cat = CatBoostRegressor(iterations=500, learning_rate=0.05, depth=6, verbose=False, random_seed=42)
 cat.fit(X_train, y_train)
 cat_pred = cat.predict(X_test)
 
-# ---------------------------
 # Evaluation
-# ---------------------------
 def eval_table(y_true, preds, model_name):
     return {
         "model": model_name,
@@ -202,14 +190,6 @@ evals = [
 
 eval_df = pd.DataFrame(evals).set_index("model")
 st.dataframe(eval_df.style.format("{:.3f}"))
-
-# ---------------------------
-# Optional: baseline comparison
-# ---------------------------
-baseline_pred = np.full_like(y_test, y_train.mean())
-baseline_r2 = r2_score(y_test, baseline_pred)
-st.caption(f"Baseline (mean predictor) R² = {baseline_r2:.3f}")
-
 
 # ---------------------------
 # SHAP explainability
@@ -234,6 +214,9 @@ soil_add = st.sidebar.slider("Add Root Zone Soil Wetness",0.0,2.0,0.0,0.1)
 temp_add = st.sidebar.slider("Add Max Temp Avg (°C)",-3.0,5.0,0.0,0.5)
 wind_mult = st.sidebar.slider("Wind multiplier (%)",50,200,100,5)
 
+# ---------------------------
+# Scenario computation and visualizations
+# ---------------------------
 row = df[(df["Division"]==sel_div)&(df["year"]==sel_year)]
 if row.empty: st.error("No data for selected Division & Year"); st.stop()
 row = row.iloc[0].copy()
@@ -243,11 +226,10 @@ row_s["Root Zone Soil Wetness"] += soil_add
 row_s["Max temp Avg"] += temp_add
 row_s["Max Wind Speed"] *= (wind_mult/100.0)
 
-# recompute FSIs
 row_s["FSI1_precip_anom"] = (row_s["Precipitation Corrected Sum"] - row["precip_mean_div"]) / (row["precip_std_div"]+1e-6)
-row_s["FSI2_soil_excess"] = max(0,row_s["Root Zone Soil Wetness"] - thresh_root)
+row_s["FSI2_soil_excess"] = max(0,row_s["Root Zone Soil Wetness"] - row["FSI2_soil_excess"].quantile(0.90))
 row_s["FSI3_precip_per_ha"] = row_s["Precipitation Corrected Sum"]/(row_s["hectares"]+1e-6)
-row_s["FSI4_wind_norm"] = row_s["Max Wind Speed"]/mean_max_wind
+row_s["FSI4_wind_norm"] = row_s["Max Wind Speed"]/row_s["Max Wind Speed"].mean()
 row_s["FSI5_temp_precip"] = row_s["Max temp Avg"]*row_s["Precipitation Corrected Sum"]
 row_s["FSI6_hum_surface"] = row_s["Humidity"]*row_s["Surface Soil Wetness"]
 row_s["Yield_lag1"] = row["Yield_lag1"]
@@ -260,7 +242,7 @@ fri_scenario = pred_cat / (exp_yield_s + 1e-6)
 risk_scenario = risk_from_fri(fri_scenario)
 
 # ---------------------------
-# Top metrics
+# Top metrics display
 # ---------------------------
 col1,col2,col3,col4 = st.columns([1.8,1.2,1.2,1.2])
 with col1:
