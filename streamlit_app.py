@@ -13,8 +13,10 @@ import plotly.express as px
 from datetime import datetime
 
 # ---------------------------
-# Helper functions
+# Settings & helper functions
 # ---------------------------
+st.set_option('deprecation.showPyplotGlobalUse', False)
+
 def rmse(y_true, y_pred): return np.sqrt(mean_squared_error(y_true, y_pred))
 def mape(y_true, y_pred): return np.mean(np.abs((y_true - y_pred)/(y_true + 1e-9)))*100
 def risk_from_fri(fri):
@@ -35,11 +37,10 @@ h1 { font-weight: 700; color: white; }
 .risk-high { color: #7f1d1d; font-weight:700; }
 </style>
 """, unsafe_allow_html=True)
-
 st.title("🌾 Flood Resilience Dashboard — Division-level Crop Yield & FRI")
 
 # ---------------------------
-# Load dataset via file uploader
+# File upload
 # ---------------------------
 st.sidebar.markdown("## Upload dataset")
 uploaded_file = st.sidebar.file_uploader("Upload CSV", type="csv")
@@ -60,7 +61,7 @@ if st.sidebar.checkbox("Show raw data (first 10 rows)"):
     st.dataframe(df.head(10))
 
 # ---------------------------
-# Ensure required columns
+# Check required columns
 # ---------------------------
 TARGET = "Crop yield"
 REQUIRED_COLS = [
@@ -149,7 +150,9 @@ cat = CatBoostRegressor(iterations=500, learning_rate=0.05, depth=6, verbose=Fal
 cat.fit(X_train, y_train)
 cat_pred = cat.predict(X_test)
 
-# Evaluation table
+# ---------------------------
+# Evaluation
+# ---------------------------
 def eval_table(y_true, preds, model_name):
     return {
         "model": model_name,
@@ -165,6 +168,7 @@ evals = [
     eval_table(y_test, cat_pred, "CatBoost"),
 ]
 eval_df = pd.DataFrame(evals).set_index("model")
+st.markdown("### 📝 Test Set Model Comparison")
 st.dataframe(eval_df.style.format("{:.3f}"))
 
 # ---------------------------
@@ -172,6 +176,11 @@ st.dataframe(eval_df.style.format("{:.3f}"))
 # ---------------------------
 explainer = shap.TreeExplainer(cat)
 shap_vals = explainer.shap_values(X_train)
+
+st.markdown("### 🌟 SHAP Global Feature Importance")
+fig_shap, ax_shap = plt.subplots(figsize=(8,5))
+shap.summary_plot(shap_vals, X_train, plot_type="bar", show=False)
+st.pyplot(fig_shap)
 
 # ---------------------------
 # Sidebar: scenario controls
@@ -220,32 +229,39 @@ st.write(f"**FRI:** {fri_scenario:.2f} → **Risk Category:** {risk_scenario}")
 # Visualization: Crop Yield & FRI
 # ---------------------------
 st.markdown("### 📈 Crop Yield & FRI over years")
+plot_df = df[df["Division"]==sel_div].copy()
+fig, ax = plt.subplots(figsize=(10,5))
+ax.plot(plot_df["year"], plot_df[TARGET], marker='o', label="Crop Yield", color='green')
+ax.plot(plot_df["year"], plot_df["FRI"], marker='o', label="FRI", color='red', linewidth=2.5)
+ax.set_xlabel("Year")
+ax.set_ylabel("Value")
+ax.set_title(f"Crop Yield & FRI for {sel_div}")
+ax.legend()
+st.pyplot(fig)
 
-plot_df = df[df["Division"]==sel_div]
-fig = px.line(plot_df, x="year", y=[TARGET, "FRI"], markers=True,
-              labels={"value":"Value","variable":"Metric","year":"Year"})
-st.plotly_chart(fig, use_container_width=True)
-
-# Test set predictions vs actual
+# ---------------------------
+# Test set scatter plot
+# ---------------------------
 st.markdown("### 🔹 Test Set: Actual vs Predicted Crop Yield")
 test_plot_df = df.iloc[X_test.index].copy()
-test_plot_df["CatBoost_pred"] = cat_pred
-fig2 = px.scatter(test_plot_df, x=TARGET, y="CatBoost_pred",
-                  labels={"x":"Actual Crop Yield","y":"Predicted Crop Yield"},
-                  title=f"CatBoost: Actual vs Predicted (Test set)")
-fig2.add_shape(type='line', x0=test_plot_df[TARGET].min(), x1=test_plot_df[TARGET].max(),
-               y0=test_plot_df[TARGET].min(), y1=test_plot_df[TARGET].max(),
-               line=dict(color="red",dash="dash"))
-st.plotly_chart(fig2, use_container_width=True)
+test_plot_df["Ridge_pred"] = ridge.predict(X_test)
+test_plot_df["RF_pred"] = rf.predict(X_test)
+test_plot_df["CatBoost_pred"] = cat.predict(X_test)
+
+fig2, ax2 = plt.subplots(figsize=(7,5))
+ax2.scatter(test_plot_df[TARGET], test_plot_df["CatBoost_pred"], color='blue', label='CatBoost')
+ax2.plot([test_plot_df[TARGET].min(), test_plot_df[TARGET].max()],
+         [test_plot_df[TARGET].min(), test_plot_df[TARGET].max()],
+         color='red', linestyle='--', label='Perfect Prediction')
+ax2.set_xlabel("Actual Crop Yield")
+ax2.set_ylabel("Predicted Crop Yield")
+ax2.set_title("CatBoost: Actual vs Predicted (Test set)")
+ax2.legend()
+st.pyplot(fig2)
 
 # ---------------------------
-# SHAP plots
+# Local SHAP for scenario
 # ---------------------------
-st.markdown("### 🌟 SHAP Global Feature Importance")
-fig3, ax3 = plt.subplots(figsize=(8,5))
-shap.summary_plot(shap_vals, X_train, plot_type="bar", show=False)
-st.pyplot(fig3)
-
 st.markdown("### 🌟 SHAP Local Explanation for Scenario")
 force_plot = shap.force_plot(explainer.expected_value, shap_vals[0:1,:], scenario_input, matplotlib=True)
 st.pyplot(force_plot)
