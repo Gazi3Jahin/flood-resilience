@@ -4,7 +4,7 @@
 A Streamlit-based dashboard for computing Flood Resilience Index (FRI), predicting crop yield, and exploring scenario analysis at the division level using Ridge, RandomForest, and CatBoost models with SHAP explainability.
 
 ##Demo
-Try the live demo hosted on Streamlit Cloud: (https://nids-demo-snxut825dynpke3so3j9yk.streamlit.app/)
+Try the live demo hosted on Streamlit Cloud: (https://flood-resilience-eejysecr4pqylbax8qfqs9.streamlit.app/)
 ---
 
 ## Features
