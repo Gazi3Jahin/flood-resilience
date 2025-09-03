@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import shap
 import matplotlib.pyplot as plt
+import plotly.express as px
 from datetime import datetime
 
 # ---------------------------
@@ -35,8 +36,7 @@ h1 { font-weight: 700; color: white; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🌾 Flood Resilience Dashboard — Division-level Crop Yield")
-st.write("Compute FSIs, FRI, predict yields (Ridge / RF / CatBoost), and explore SHAP explanations.")
+st.title("🌾 Flood Resilience Dashboard — Division-level Crop Yield & FRI")
 
 # ---------------------------
 # Load dataset via file uploader
@@ -81,7 +81,6 @@ df[num_cols] = df[num_cols].fillna(df[num_cols].median())
 # ---------------------------
 # Feature engineering: FSIs
 # ---------------------------
-st.markdown("### 🔧 Feature engineering (FSIs)")
 df["precip_mean_div"] = df.groupby("Division")["Precipitation Corrected Sum"].transform("mean")
 df["precip_std_div"] = df.groupby("Division")["Precipitation Corrected Sum"].transform("std").replace(0,1e-6)
 df["FSI1_precip_anom"] = (df["Precipitation Corrected Sum"] - df["precip_mean_div"]) / df["precip_std_div"]
@@ -99,12 +98,10 @@ df = df.sort_values(["Division","year"])
 df["Yield_lag1"] = df.groupby("Division")[TARGET].shift(1)
 df["FSI1_lag1"] = df.groupby("Division")["FSI1_precip_anom"].shift(1)
 df = df.fillna(method="bfill").fillna(0)
-st.success("FSIs computed.")
 
 # ---------------------------
 # Expected Yield & FRI
 # ---------------------------
-st.markdown("### 🔎 Compute Expected Yield & FRI")
 features_for_expected = ["FSI1_precip_anom","FSI2_soil_excess","FSI3_precip_per_ha","Yield_lag1"]
 mask_non_extreme = df["FSI1_precip_anom"].abs() <= 2.0
 X_exp = df.loc[mask_non_extreme, features_for_expected]
@@ -119,18 +116,15 @@ else:
 
 df["FRI"] = df[TARGET] / (df["Expected_Yield"] + 1e-6)
 df["Risk_Category"] = df["FRI"].apply(risk_from_fri)
-st.success("Expected Yield & FRI computed.")
 
 # ---------------------------
 # Modeling
 # ---------------------------
-st.markdown("### 🧠 Train models (Ridge / RandomForest / CatBoost)")
 feature_cols = [
     "FSI1_precip_anom","FSI2_soil_excess","FSI3_precip_per_ha",
     "FSI4_wind_norm","FSI5_temp_precip","FSI6_hum_surface",
     "Yield_lag1","FSI1_lag1"
 ]
-
 X = df[feature_cols]
 y = df[TARGET]
 df = df.sort_values(["Division","year"])
@@ -138,10 +132,8 @@ df = df.sort_values(["Division","year"])
 test_years_per_div = df.groupby("Division")["year"].apply(lambda x: x.nlargest(max(1,int(0.2*len(x))))).explode()
 test_mask = df.index.isin(test_years_per_div.index)
 train_mask = ~test_mask
-
 X_train, X_test = X[train_mask], X[test_mask]
 y_train, y_test = y[train_mask], y[test_mask]
-
 if len(y_test) < 10:
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
@@ -157,9 +149,7 @@ cat = CatBoostRegressor(iterations=500, learning_rate=0.05, depth=6, verbose=Fal
 cat.fit(X_train, y_train)
 cat_pred = cat.predict(X_test)
 
-# ---------------------------
-# Evaluation
-# ---------------------------
+# Evaluation table
 def eval_table(y_true, preds, model_name):
     return {
         "model": model_name,
@@ -174,14 +164,12 @@ evals = [
     eval_table(y_test, rf_pred, "RandomForest"),
     eval_table(y_test, cat_pred, "CatBoost"),
 ]
-
 eval_df = pd.DataFrame(evals).set_index("model")
 st.dataframe(eval_df.style.format("{:.3f}"))
 
 # ---------------------------
 # SHAP explainability
 # ---------------------------
-st.markdown("### 🔍 SHAP explainability (CatBoost)")
 explainer = shap.TreeExplainer(cat)
 shap_vals = explainer.shap_values(X_train)
 
@@ -194,57 +182,16 @@ sel_div = st.sidebar.selectbox("Division", divisions, index=0)
 years_for_div = sorted(df[df["Division"]==sel_div]["year"].unique())
 sel_year = st.sidebar.selectbox("Year", years_for_div, index=len(years_for_div)-1)
 
-scenario_row = df[(df["Division"]==sel_div) & (df["year"]==sel_year)]
-if scenario_row.empty:
-    st.warning("No data for selected division/year.")
-    st.stop()
-scenario_row = scenario_row.iloc[0].copy()
+scenario_row = df[(df["Division"]==sel_div) & (df["year"]==sel_year)].iloc[0].copy()
 
-# Sliders for scenario variables
-scenario_row["Precipitation Corrected Sum"] = st.sidebar.slider(
-    "Precipitation Corrected Sum",
-    float(df["Precipitation Corrected Sum"].min()),
-    float(df["Precipitation Corrected Sum"].max()),
-    float(scenario_row["Precipitation Corrected Sum"])
-)
-scenario_row["Root Zone Soil Wetness"] = st.sidebar.slider(
-    "Root Zone Soil Wetness",
-    float(df["Root Zone Soil Wetness"].min()),
-    float(df["Root Zone Soil Wetness"].max()),
-    float(scenario_row["Root Zone Soil Wetness"])
-)
-scenario_row["Surface Soil Wetness"] = st.sidebar.slider(
-    "Surface Soil Wetness",
-    float(df["Surface Soil Wetness"].min()),
-    float(df["Surface Soil Wetness"].max()),
-    float(scenario_row["Surface Soil Wetness"])
-)
-scenario_row["Max temp Avg"] = st.sidebar.slider(
-    "Max Temp Avg",
-    float(df["Max temp Avg"].min()),
-    float(df["Max temp Avg"].max()),
-    float(scenario_row["Max temp Avg"])
-)
-scenario_row["Max Wind Speed"] = st.sidebar.slider(
-    "Max Wind Speed",
-    float(df["Max Wind Speed"].min()),
-    float(df["Max Wind Speed"].max()),
-    float(scenario_row["Max Wind Speed"])
-)
-scenario_row["Humidity"] = st.sidebar.slider(
-    "Humidity",
-    float(df["Humidity"].min()),
-    float(df["Humidity"].max()),
-    float(scenario_row["Humidity"])
-)
-scenario_row["hectares"] = st.sidebar.slider(
-    "Hectares",
-    float(df["hectares"].min()),
-    float(df["hectares"].max()),
-    float(scenario_row["hectares"])
-)
+for col in ["Precipitation Corrected Sum","Root Zone Soil Wetness","Surface Soil Wetness",
+            "Max temp Avg","Max Wind Speed","Humidity","hectares"]:
+    scenario_row[col] = st.sidebar.slider(
+        col,
+        float(df[col].min()), float(df[col].max()),
+        float(scenario_row[col])
+    )
 
-# Recompute scenario FSIs
 scenario_row["FSI1_precip_anom"] = (scenario_row["Precipitation Corrected Sum"] - df[df["Division"]==sel_div]["Precipitation Corrected Sum"].mean()) / df[df["Division"]==sel_div]["Precipitation Corrected Sum"].std()
 scenario_row["FSI2_soil_excess"] = max(0, scenario_row["Root Zone Soil Wetness"] - thresh_root)
 scenario_row["FSI3_precip_per_ha"] = scenario_row["Precipitation Corrected Sum"] / (scenario_row["hectares"] + 1e-6)
@@ -252,8 +199,7 @@ scenario_row["FSI4_wind_norm"] = scenario_row["Max Wind Speed"] / mean_max_wind
 scenario_row["FSI5_temp_precip"] = scenario_row["Max temp Avg"] * scenario_row["Precipitation Corrected Sum"]
 scenario_row["FSI6_hum_surface"] = scenario_row["Humidity"] * scenario_row["Surface Soil Wetness"]
 
-scenario_features = feature_cols
-scenario_input = pd.DataFrame([scenario_row[scenario_features]])
+scenario_input = pd.DataFrame([scenario_row[feature_cols]])
 
 # Scenario predictions
 st.markdown(f"### 📊 Scenario predictions — {sel_div} / {sel_year}")
@@ -270,13 +216,43 @@ fri_scenario = scenario_row[TARGET] / (expected_yield_scenario + 1e-6)
 risk_scenario = risk_from_fri(fri_scenario)
 st.write(f"**FRI:** {fri_scenario:.2f} → **Risk Category:** {risk_scenario}")
 
-# SHAP plot
-st.markdown("### 🌟 SHAP plot (CatBoost)")
-fig, ax = plt.subplots(figsize=(8,5))
-shap.summary_plot(shap_vals, X_train, plot_type="bar", show=False)
-st.pyplot(fig)
+# ---------------------------
+# Visualization: Crop Yield & FRI
+# ---------------------------
+st.markdown("### 📈 Crop Yield & FRI over years")
 
+plot_df = df[df["Division"]==sel_div]
+fig = px.line(plot_df, x="year", y=[TARGET, "FRI"], markers=True,
+              labels={"value":"Value","variable":"Metric","year":"Year"})
+st.plotly_chart(fig, use_container_width=True)
+
+# Test set predictions vs actual
+st.markdown("### 🔹 Test Set: Actual vs Predicted Crop Yield")
+test_plot_df = df.iloc[X_test.index].copy()
+test_plot_df["CatBoost_pred"] = cat_pred
+fig2 = px.scatter(test_plot_df, x=TARGET, y="CatBoost_pred",
+                  labels={"x":"Actual Crop Yield","y":"Predicted Crop Yield"},
+                  title=f"CatBoost: Actual vs Predicted (Test set)")
+fig2.add_shape(type='line', x0=test_plot_df[TARGET].min(), x1=test_plot_df[TARGET].max(),
+               y0=test_plot_df[TARGET].min(), y1=test_plot_df[TARGET].max(),
+               line=dict(color="red",dash="dash"))
+st.plotly_chart(fig2, use_container_width=True)
+
+# ---------------------------
+# SHAP plots
+# ---------------------------
+st.markdown("### 🌟 SHAP Global Feature Importance")
+fig3, ax3 = plt.subplots(figsize=(8,5))
+shap.summary_plot(shap_vals, X_train, plot_type="bar", show=False)
+st.pyplot(fig3)
+
+st.markdown("### 🌟 SHAP Local Explanation for Scenario")
+force_plot = shap.force_plot(explainer.expected_value, shap_vals[0:1,:], scenario_input, matplotlib=True)
+st.pyplot(force_plot)
+
+# ---------------------------
 # Download predictions
+# ---------------------------
 st.markdown("### 💾 Download predictions")
 df_preds = df.copy()
 df_preds["Ridge_pred"] = ridge.predict(X)
@@ -295,4 +271,4 @@ st.download_button(
     mime="text/csv"
 )
 
-st.success("✅ Streamlit Flood Resilience Dashboard ready!")
+st.success("✅ Flood Resilience Dashboard ready!")
