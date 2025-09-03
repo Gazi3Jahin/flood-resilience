@@ -8,9 +8,7 @@ from catboost import CatBoostRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import shap
-import plotly.express as px
 import matplotlib.pyplot as plt
-import base64
 from datetime import datetime
 
 # ---------------------------
@@ -30,9 +28,7 @@ st.set_page_config(page_title="Flood Resilience Dashboard", layout="wide")
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"]{background: linear-gradient(180deg, #f8fafc, #000000);}
-.card{background: black; padding: 1rem; border-radius: 12px; box-shadow: 0 6px 20px 4px rgba(0,0,0,0.08); margin-bottom: 1rem; color: black;}
-h1 { font-weight: 700; }
-.small-muted { color: #6b7280; font-size: 0.9rem; }
+h1 { font-weight: 700; color: white; }
 .risk-low { color: #065f46; font-weight:700; }
 .risk-med { color: #b45309; font-weight:700; }
 .risk-high { color: #7f1d1d; font-weight:700; }
@@ -90,7 +86,6 @@ df["precip_mean_div"] = df.groupby("Division")["Precipitation Corrected Sum"].tr
 df["precip_std_div"] = df.groupby("Division")["Precipitation Corrected Sum"].transform("std").replace(0,1e-6)
 df["FSI1_precip_anom"] = (df["Precipitation Corrected Sum"] - df["precip_mean_div"]) / df["precip_std_div"]
 
-# Thresholds for scenario calculations
 thresh_root = df["Root Zone Soil Wetness"].quantile(0.90)
 mean_max_wind = df["Max Wind Speed"].mean() + 1e-6
 
@@ -139,6 +134,7 @@ feature_cols = [
 X = df[feature_cols]
 y = df[TARGET]
 df = df.sort_values(["Division","year"])
+
 test_years_per_div = df.groupby("Division")["year"].apply(lambda x: x.nlargest(max(1,int(0.2*len(x))))).explode()
 test_mask = df.index.isin(test_years_per_div.index)
 train_mask = ~test_mask
@@ -192,49 +188,75 @@ shap_vals = explainer.shap_values(X_train)
 # ---------------------------
 # Sidebar: scenario controls
 # ---------------------------
-st.sidebar.markdown("## Controls")
+st.sidebar.markdown("## Scenario Controls")
 divisions = df["Division"].unique().tolist()
 sel_div = st.sidebar.selectbox("Division", divisions, index=0)
 years_for_div = sorted(df[df["Division"]==sel_div]["year"].unique())
-sel_year = st.sidebar.selectbox("Year", years_for_div, index=len(years_for_div-1))
+sel_year = st.sidebar.selectbox("Year", years_for_div, index=len(years_for_div)-1)
 
-# Extract scenario row
 scenario_row = df[(df["Division"]==sel_div) & (df["year"]==sel_year)]
 if scenario_row.empty:
     st.warning("No data for selected division/year.")
     st.stop()
-
 scenario_row = scenario_row.iloc[0].copy()
 
-# ---------------------------
-# Scenario sliders
-# ---------------------------
-st.sidebar.markdown("### Scenario sliders")
+# Sliders for scenario variables
+scenario_row["Precipitation Corrected Sum"] = st.sidebar.slider(
+    "Precipitation Corrected Sum",
+    float(df["Precipitation Corrected Sum"].min()),
+    float(df["Precipitation Corrected Sum"].max()),
+    float(scenario_row["Precipitation Corrected Sum"])
+)
 scenario_row["Root Zone Soil Wetness"] = st.sidebar.slider(
-    "Root Zone Soil Wetness", 
-    float(df["Root Zone Soil Wetness"].min()), 
-    float(df["Root Zone Soil Wetness"].max()), 
+    "Root Zone Soil Wetness",
+    float(df["Root Zone Soil Wetness"].min()),
+    float(df["Root Zone Soil Wetness"].max()),
     float(scenario_row["Root Zone Soil Wetness"])
 )
+scenario_row["Surface Soil Wetness"] = st.sidebar.slider(
+    "Surface Soil Wetness",
+    float(df["Surface Soil Wetness"].min()),
+    float(df["Surface Soil Wetness"].max()),
+    float(scenario_row["Surface Soil Wetness"])
+)
+scenario_row["Max temp Avg"] = st.sidebar.slider(
+    "Max Temp Avg",
+    float(df["Max temp Avg"].min()),
+    float(df["Max temp Avg"].max()),
+    float(scenario_row["Max temp Avg"])
+)
 scenario_row["Max Wind Speed"] = st.sidebar.slider(
-    "Max Wind Speed", 
-    float(df["Max Wind Speed"].min()), 
-    float(df["Max Wind Speed"].max()), 
+    "Max Wind Speed",
+    float(df["Max Wind Speed"].min()),
+    float(df["Max Wind Speed"].max()),
     float(scenario_row["Max Wind Speed"])
 )
+scenario_row["Humidity"] = st.sidebar.slider(
+    "Humidity",
+    float(df["Humidity"].min()),
+    float(df["Humidity"].max()),
+    float(scenario_row["Humidity"])
+)
+scenario_row["hectares"] = st.sidebar.slider(
+    "Hectares",
+    float(df["hectares"].min()),
+    float(df["hectares"].max()),
+    float(scenario_row["hectares"])
+)
 
-# Recompute FSIs for scenario
+# Recompute scenario FSIs
+scenario_row["FSI1_precip_anom"] = (scenario_row["Precipitation Corrected Sum"] - df[df["Division"]==sel_div]["Precipitation Corrected Sum"].mean()) / df[df["Division"]==sel_div]["Precipitation Corrected Sum"].std()
 scenario_row["FSI2_soil_excess"] = max(0, scenario_row["Root Zone Soil Wetness"] - thresh_root)
+scenario_row["FSI3_precip_per_ha"] = scenario_row["Precipitation Corrected Sum"] / (scenario_row["hectares"] + 1e-6)
 scenario_row["FSI4_wind_norm"] = scenario_row["Max Wind Speed"] / mean_max_wind
+scenario_row["FSI5_temp_precip"] = scenario_row["Max temp Avg"] * scenario_row["Precipitation Corrected Sum"]
+scenario_row["FSI6_hum_surface"] = scenario_row["Humidity"] * scenario_row["Surface Soil Wetness"]
 
 scenario_features = feature_cols
 scenario_input = pd.DataFrame([scenario_row[scenario_features]])
 
-# ---------------------------
 # Scenario predictions
-# ---------------------------
 st.markdown(f"### 📊 Scenario predictions — {sel_div} / {sel_year}")
-
 ridge_scenario = ridge.predict(scenario_input)[0]
 rf_scenario = rf.predict(scenario_input)[0]
 cat_scenario = cat.predict(scenario_input)[0]
@@ -243,24 +265,18 @@ st.write(f"**Ridge predicted yield:** {ridge_scenario:.2f}")
 st.write(f"**RandomForest predicted yield:** {rf_scenario:.2f}")
 st.write(f"**CatBoost predicted yield:** {cat_scenario:.2f}")
 
-# Scenario FRI & Risk
 expected_yield_scenario = scenario_row["Expected_Yield"]
 fri_scenario = scenario_row[TARGET] / (expected_yield_scenario + 1e-6)
 risk_scenario = risk_from_fri(fri_scenario)
 st.write(f"**FRI:** {fri_scenario:.2f} → **Risk Category:** {risk_scenario}")
 
-# ---------------------------
-# SHAP plots for scenario
-# ---------------------------
+# SHAP plot
 st.markdown("### 🌟 SHAP plot (CatBoost)")
-
 fig, ax = plt.subplots(figsize=(8,5))
 shap.summary_plot(shap_vals, X_train, plot_type="bar", show=False)
 st.pyplot(fig)
 
-# ---------------------------
-# Optional: download predictions
-# ---------------------------
+# Download predictions
 st.markdown("### 💾 Download predictions")
 df_preds = df.copy()
 df_preds["Ridge_pred"] = ridge.predict(X)
